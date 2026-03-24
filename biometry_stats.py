@@ -6,7 +6,7 @@ from itertools import combinations
 import warnings
 
 # Configuration
-BOOTSTRAP_ITERATIONS = 2000
+BOOTSTRAP_ITERATIONS = 4000
 BOOTSTRAP_SEED = 42
 
 if BOOTSTRAP_SEED is None:
@@ -58,54 +58,96 @@ def _calculate_studentized_bootstrap_p(data_vector, indices):
         with np.errstate(divide='ignore', invalid='ignore'):
             b_ses = b_stds / np.sqrt(b_n)
             t_stars = b_means / b_ses
-        
+            
     t_stars = np.nan_to_num(t_stars, nan=0.0)
     p_value = np.mean(np.abs(t_stars) >= np.abs(t_obs))
     
     return p_value, np.abs(t_obs), np.abs(t_stars)
 
-def _calculate_bca_bootstrap(data1, data2, boot_stats, stat_func, cluster_ids):
-    valid_boot = boot_stats[~np.isnan(boot_stats)]
-    B = len(valid_boot)
-    if B == 0: 
-        return np.nan, np.nan
+# --- Exact & Morgan-Pitman Tests ---
+
+def mcnemar_test(mask1, mask2):
+    """Computes the asymptotic McNemar test with continuity correction."""
+    b = np.sum(mask1 & ~mask2)
+    c = np.sum(~mask1 & mask2)
+    n = b + c
     
-    theta_hat = stat_func(data1, data2)
+    # Return 1.0 if discordant pairs are perfectly equal (this covers b==c==0 as well).
+    # This precisely matches the overrides observed in the R implementation.
+    if b == c:
+        return 1.0
     
-    # 1. Acceleration factor (a) using jackknife per-cluster
-    unique_clusters = np.unique(cluster_ids)
-    jk_stats = np.zeros(len(unique_clusters))
-    for i, cid in enumerate(unique_clusters):
-        mask = cluster_ids != cid
-        jk_stats[i] = stat_func(data1[mask], data2[mask])
-            
-    mean_jk = np.mean(jk_stats)
-    diffs = mean_jk - jk_stats
-    sum_sq = np.sum(diffs**2)
-    a = np.sum(diffs**3) / (6 * (sum_sq**1.5)) if sum_sq > 0 else 0.0
+    # Matches R's stats::mcnemar.test explicit calculation
+    chi2_stat = ((abs(b - c) - 1.0) ** 2) / n
+    p_val = stats.chi2.sf(chi2_stat, 1)
+    return min(1.0, float(p_val))
+
+def olshc4(x, y):
+    """Computes p-values via least squares regression with Cribari-Neto (HC4) estimator."""
+    n = len(y)
+    if n < 3:
+        return 1.0 
+        
+    X = np.column_stack((np.ones(n), x))
     
-    # 2. Bias correction factor (z0)
-    p_theta = (np.sum(valid_boot < theta_hat) + 0.5 * np.sum(valid_boot == theta_hat)) / B
-    p_theta = np.clip(p_theta, 1/(2*B), 1 - 1/(2*B))
-    z0 = stats.norm.ppf(p_theta)
+    try:
+        XtX_inv = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        return 1.0
+        
+    # Optimize leverage calculation avoiding full NxN matrix allocation
+    h = np.sum((X @ XtX_inv) * X, axis=1)
     
-    # 3. BCa CI bounds
-    z_025 = stats.norm.ppf(0.025)
-    z_975 = stats.norm.ppf(0.975)
+    # OLS fit
+    beta = XtX_inv @ X.T @ y
+    res = y - X @ beta
     
-    den_1 = 1 - a * (z0 + z_025)
-    den_2 = 1 - a * (z0 + z_975)
+    # HC4 correction
+    sum_h = np.sum(h)
+    if sum_h == 0:
+        d = np.zeros_like(h)
+    else:
+        d = (n * h) / sum_h
+        d = np.minimum(4, d)
+        
+    # Handle leverages safely
+    denom = np.power(1 - h, d)
+    denom[denom < 1e-10] = 1e-10 
+    omega = (res**2) / denom
     
-    alpha_1_z = z0 + (z0 + z_025) / den_1 if den_1 != 0 else z0 + z0 + z_025
-    alpha_2_z = z0 + (z0 + z_975) / den_2 if den_2 != 0 else z0 + z0 + z_975
+    # Optimize HC4 covariance calculation avoiding full NxN matrix allocation
+    middle = (X.T * omega) @ X
+    Sigma = XtX_inv @ middle @ XtX_inv
     
-    q1 = np.clip(stats.norm.cdf(alpha_1_z), 0, 1)
-    q2 = np.clip(stats.norm.cdf(alpha_2_z), 0, 1)
+    se_slope = np.sqrt(Sigma[1, 1])
+    if se_slope == 0:
+        return 1.0
+        
+    t_stat = beta[1] / se_slope
+    df = n - 2
+    p_val = 2 * (1 - stats.t.cdf(np.abs(t_stat), df))
     
-    ci_lower = np.percentile(valid_boot, q1 * 100)
-    ci_upper = np.percentile(valid_boot, q2 * 100)
+    return p_val
+
+def pcorhc4(x, y):
+    """Compute confidence intervals for Pearson's r using the HC4 method."""
+    var_x = np.var(x, ddof=1)
+    var_y = np.var(y, ddof=1)
     
-    return ci_lower, ci_upper
+    if var_x == 0 or var_y == 0:
+        return 1.0
+        
+    z1 = (x - np.mean(x)) / np.sqrt(var_x)
+    z2 = (y - np.mean(y)) / np.sqrt(var_y)
+    
+    return olshc4(z1, z2)
+
+def comdvar(x, y):
+    """Test hypothesis that two dependent variables have equal variances using Morgan-Pitman + HC4."""
+    diff = x - y
+    summ = x + y
+    return pcorhc4(diff, summ)
+
 
 def perform_advanced_bootstrap(errors_1: np.array, errors_2: np.array, indices: np.array, cluster_ids: np.array) -> dict:
     # Pad arrays with NaN to support varying cluster sample sizes
@@ -117,17 +159,11 @@ def perform_advanced_bootstrap(errors_1: np.array, errors_2: np.array, indices: 
     
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        n_valid = np.sum(~np.isnan(samp1), axis=1)
         
         boot_mpe_diffs = np.nanmean(samp1, axis=1) - np.nanmean(samp2, axis=1)
         boot_mae_diffs = np.nanmean(np.abs(samp1), axis=1) - np.nanmean(np.abs(samp2), axis=1)
         boot_medae_diffs = np.nanmedian(np.abs(samp1), axis=1) - np.nanmedian(np.abs(samp2), axis=1)
         boot_rmse_diffs = np.sqrt(np.nanmean(samp1**2, axis=1)) - np.sqrt(np.nanmean(samp2**2, axis=1))
-        boot_sd_diffs = np.nanstd(samp1, axis=1, ddof=1) - np.nanstd(samp2, axis=1, ddof=1)
-        
-        mask1 = np.abs(samp1) <= MCNEMAR_THRESHOLD
-        mask2 = np.abs(samp2) <= MCNEMAR_THRESHOLD
-        boot_mcnemar_diffs = np.nansum(mask1, axis=1) / n_valid - np.nansum(mask2, axis=1) / n_valid
 
     # Romano-Wolf raw differences for step-down Max-T
     rw_mpe_obs = np.abs(np.mean(errors_1) - np.mean(errors_2))
@@ -152,31 +188,17 @@ def perform_advanced_bootstrap(errors_1: np.array, errors_2: np.array, indices: 
     p_medae = _calculate_percentile_bootstrap_p(boot_medae_diffs)
     rw_medae_obs = np.abs(stat_func_medae(errors_1, errors_2))
     rw_medae_null = np.abs(boot_medae_diffs - stat_func_medae(errors_1, errors_2))
-    
-    stat_func_sd = lambda d1, d2: np.std(d1, ddof=1) - np.std(d2, ddof=1)
-    p_sd = _calculate_percentile_bootstrap_p(boot_sd_diffs)
-    rw_sd_obs = np.abs(stat_func_sd(errors_1, errors_2))
-    rw_sd_null = np.abs(boot_sd_diffs - stat_func_sd(errors_1, errors_2))
-    
-    stat_func_mcnemar = lambda d1, d2: np.mean(np.abs(d1) <= MCNEMAR_THRESHOLD) - np.mean(np.abs(d2) <= MCNEMAR_THRESHOLD)
-    p_mcnemar = _calculate_percentile_bootstrap_p(boot_mcnemar_diffs)
-    rw_mcnemar_obs = np.abs(stat_func_mcnemar(errors_1, errors_2))
-    rw_mcnemar_null = np.abs(boot_mcnemar_diffs - stat_func_mcnemar(errors_1, errors_2))
 
     return {
         'P_MPE': p_mpe,
         'P_MAE': p_mae,
         'P_MedAE': p_medae,
         'P_RMSE': p_rmse,
-        'P_SD': p_sd,
-        'P_McNemar': p_mcnemar,
         
         'RW_MPE_obs': rw_mpe_obs, 'RW_MPE_null': rw_mpe_null,
         'RW_MAE_obs': rw_mae_obs, 'RW_MAE_null': rw_mae_null,
         'RW_RMSE_obs': rw_rmse_obs, 'RW_RMSE_null': rw_rmse_null,
         'RW_MedAE_obs': rw_medae_obs, 'RW_MedAE_null': rw_medae_null,
-        'RW_SD_obs': rw_sd_obs, 'RW_SD_null': rw_sd_null,
-        'RW_McNemar_obs': rw_mcnemar_obs, 'RW_McNemar_null': rw_mcnemar_null,
     }
 
 def yuen_t_test(x, y, tr=0):
@@ -291,13 +313,12 @@ def run_biometry_analysis(df_input, group_name="All"):
     pairs = list(combinations(formulas, 2))
     results = []
     
+    # We no longer need RW tracking for SD/McNemar as they aren't bootstrapped
     rw_stats = {
         'MPE': {'obs': [], 'null': []},
         'MAE': {'obs': [], 'null': []},
         'RMSE': {'obs': [], 'null': []},
-        'MedAE': {'obs': [], 'null': []},
-        'SD': {'obs': [], 'null': []},
-        'McNemar': {'obs': [], 'null': []}
+        'MedAE': {'obs': [], 'null': []}
     }
     
     bs_type = "Studentized" if USE_STUDENTIZED_BS else "Percentile"
@@ -317,10 +338,13 @@ def run_biometry_analysis(df_input, group_name="All"):
         rw_stats['RMSE']['null'].append(boot_res['RW_RMSE_null'])
         rw_stats['MedAE']['obs'].append(boot_res['RW_MedAE_obs'])
         rw_stats['MedAE']['null'].append(boot_res['RW_MedAE_null'])
-        rw_stats['SD']['obs'].append(boot_res['RW_SD_obs'])
-        rw_stats['SD']['null'].append(boot_res['RW_SD_null'])
-        rw_stats['McNemar']['obs'].append(boot_res['RW_McNemar_obs'])
-        rw_stats['McNemar']['null'].append(boot_res['RW_McNemar_null'])
+        
+        # New Tests: McNemar and Morgan-Pitman SD
+        p_sd = comdvar(e1, e2)
+        
+        mask1 = np.abs(e1) <= MCNEMAR_THRESHOLD
+        mask2 = np.abs(e2) <= MCNEMAR_THRESHOLD
+        p_mcnemar = mcnemar_test(mask1, mask2)
         
         if RUN_YUEN_TEST:
             _, diff_mae = yuen_t_test(np.abs(e1), np.abs(e2), tr=0)
@@ -334,9 +358,7 @@ def run_biometry_analysis(df_input, group_name="All"):
         diff_rmse = np.sqrt(np.mean(e1**2)) - np.sqrt(np.mean(e2**2))
         diff_sd = np.std(e1, ddof=1) - np.std(e2, ddof=1)
         
-        prop1 = np.mean(np.abs(e1) <= MCNEMAR_THRESHOLD)
-        prop2 = np.mean(np.abs(e2) <= MCNEMAR_THRESHOLD)
-        diff_mcnemar = prop1 - prop2
+        diff_mcnemar = np.mean(mask1) - np.mean(mask2)
         
         row = {
             'Group': group_name, 'Formula A': f1, 'Formula B': f2, 'N': n_global,
@@ -344,8 +366,8 @@ def run_biometry_analysis(df_input, group_name="All"):
             'MAE Diff': diff_mae, 'Boot (MAE) p': boot_res['P_MAE'],
             'MedAE Diff': diff_medae, 'Boot (MedAE) p': boot_res['P_MedAE'],
             'RMSE Diff': diff_rmse, 'Boot (RMSE) p': boot_res['P_RMSE'],
-            'SD Diff': diff_sd, 'Boot (SD) p': boot_res['P_SD'],
-            'McNemar Diff': diff_mcnemar, 'Boot (McNemar) p': boot_res['P_McNemar']
+            'SD Diff': diff_sd, 'Morgan-Pitman (SD) p': p_sd,
+            'McNemar Diff': diff_mcnemar, 'McNemar p': p_mcnemar
         }
         
         if RUN_YUEN_TEST:
@@ -365,9 +387,7 @@ def adjust_pvalues(df_results, rw_stats=None, method='hommel'):
         'Boot (MPE) p': 'MPE',
         'Boot (MAE) p': 'MAE',
         'Boot (MedAE) p': 'MedAE',
-        'Boot (RMSE) p': 'RMSE',
-        'Boot (SD) p': 'SD',
-        'Boot (McNemar) p': 'McNemar'
+        'Boot (RMSE) p': 'RMSE'
     }
         
     p_cols = [c for c in df_results.columns if ' p' in c and 'adj' not in c]
@@ -379,13 +399,18 @@ def adjust_pvalues(df_results, rw_stats=None, method='hommel'):
             null_matrix = np.column_stack(rw_stats[metric]['null'])
             pvals_adj = romano_wolf_correction(obs, null_matrix)
         else:
-            fallback_method = 'hommel' if method == 'romano_wolf' else method
+            # Enforce Holm specifically for McNemar test, fallback for everything else
+            if col == 'McNemar p':
+                current_method = 'holm'
+            else:
+                current_method = 'hommel' if method == 'romano_wolf' else method
+                
             pvals = df_results[col].values
             pvals_adj = np.full(len(pvals), np.nan)
             
             mask = ~np.isnan(pvals)
             if np.sum(mask) > 0:
-                reject, adj, _, _ = multipletests(pvals[mask], method=fallback_method)
+                reject, adj, _, _ = multipletests(pvals[mask], method=current_method)
                 pvals_adj[mask] = adj
                 
         try:
