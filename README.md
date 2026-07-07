@@ -26,7 +26,7 @@ Ensure you have Python 3.8+ installed. The script relies on standard data scienc
 
 ```bash
 pip install numpy pandas scipy statsmodels openpyxl
-
+```
 ## Basic Usage
 
 The simplest way to use the suite is via the [web GUI](https://gmeye.co.uk/#research).
@@ -57,12 +57,12 @@ results_df = analyze_prediction_errors(df, axl_data=axl_series, settings=setting
 # Save results to Excel using the built-in formatter to generate methodology summaries
 with pd.ExcelWriter("analysis_output.xlsx") as writer:
     write_advanced_stats_to_excel(results_df, writer)
-
+```
 ## Data Formatting Requirements
 
 * **Prediction Errors:** Columns containing numeric prediction error data will be automatically identified as formulas to be compared. Ensure your data has been zeroised (mean error optimised to zero) prior to RMSE analysis for exact precision proxying.
 
-* **Patient IDs (Optional):** If your dataset contains a column named `patient_id` (or similar variants like `id_patient`, `ptid`), the script will automatically activate Cluster Bootstrapping.
+* **Patient IDs (Optional):** If your dataset contains a column named `patient_id` (or similar variants like `id_patient`, `ptid`, `pt_id`), the script will automatically activate Cluster Bootstrapping.
 
 * **Outliers:** Data exceeding the validation threshold (default ±4.0D) is filtered via listwise deletion prior to matrix generation.
 
