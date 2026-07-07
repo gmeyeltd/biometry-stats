@@ -19,7 +19,7 @@ else:
 
 YUEN_TRIM_PROPORTION = 0.2
 MCNEMAR_THRESHOLD = 0.50
-MULTIPLE_TEST_METHOD = 'romano_wolf'
+MULTIPLE_TEST_METHOD = 'romano_wolf' # 'romano_wolf', 'hommel', 'holm', 'bonferroni', 'sidak', 'holm-sidak', 'simes-hochberg', 'fdr_bh', 'fdr_by', 'fdr_tsbh', 'fdr_tsbky'
 FALLBACK_TEST_METHOD = 'hommel'
 INVALID_THRESHOLD = 4.0
 AXL_SHORT_CUTOFF = 22.0
