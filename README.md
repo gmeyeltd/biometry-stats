@@ -2,7 +2,7 @@
 
 A comprehensive Python toolkit for rigorous, heteroscedastic statistical analysis of Intraocular Lens (IOL) power calculation formulas.
 
-This engine evaluates IOL prediction errors by computing appropriate summary metrics (MAE, RMSE, MedAE, MPE, SD, and proportions within $\le 0.50$D) and generating non-parametric inferences using high-iteration bootstrap resampling. It is mathematically equivalent to the Wilcox-Holladay-Wang-Koch (WHWK) R framework for scale comparisons, but implements advanced vectorized operations, true multithreading, and additional FWER (Family-Wise Error Rate) controls.
+This engine evaluates IOL prediction errors by computing appropriate summary metrics (MAE, RMSE, MedAE, MPE, SD, and proportions within ≤0.50D) and generating non-parametric inferences using high-iteration bootstrap resampling. It is mathematically equivalent to the Wilcox-Holladay-Wang-Koch (WHWK) R framework for scale comparisons, but implements advanced vectorized operations, true multithreading, and additional FWER (Family-Wise Error Rate) controls.
 
 [**Launch Graphical User Interface (GUI)**](https://gmeye.co.uk/#research)
 
@@ -16,7 +16,7 @@ This engine evaluates IOL prediction errors by computing appropriate summary met
 
 * **Multiple Comparison Correction:** Supports standard p-value adjustment methods (Hommel, Holm, Bonferroni, FDR) alongside advanced **Romano-Wolf Step-Down Max-T** corrections for tight FWER control.
 
-* **High-Performance Multithreading:** Built on `numpy`, `pandas`, and standard library `ThreadPoolExecutor` to execute pairwise comparisons across all available CPU cores, supporting large resampling iterations (e.g., $> 4,000$) in seconds (depends on number of rows and formulas).
+* **High-Performance Multithreading:** Built on `numpy`, `pandas`, and standard library `ThreadPoolExecutor` to execute pairwise comparisons across all available CPU cores, supporting large resampling iterations (e.g., >4,000) in seconds (depending on number of rows).
 
 * **Subgroup Analysis:** Allows automatic partitioning of results based on axial length (Short, Medium, Long) cutoffs.
 
@@ -24,9 +24,8 @@ This engine evaluates IOL prediction errors by computing appropriate summary met
 
 Ensure you have Python 3.8+ installed. The script relies on standard data science libraries:
 
-```
+```bash
 pip install numpy pandas scipy statsmodels openpyxl
-```
 
 ## Basic Usage
 
@@ -34,7 +33,7 @@ The simplest way to use the suite is via the [web GUI](https://gmeye.co.uk/#rese
 
 Otherwise, you can load your data into a `pandas` DataFrame containing your spherical equivalent prediction errors (SEQ-PE) and pass it to the analysis function. Each column should represent a different IOL formula.
 
-```
+```python
 import pandas as pd
 from biometry_stats import analyze_prediction_errors, write_advanced_stats_to_excel
 
@@ -58,7 +57,6 @@ results_df = analyze_prediction_errors(df, axl_data=axl_series, settings=setting
 # Save results to Excel using the built-in formatter to generate methodology summaries
 with pd.ExcelWriter("analysis_output.xlsx") as writer:
     write_advanced_stats_to_excel(results_df, writer)
-```
 
 ## Data Formatting Requirements
 
@@ -66,13 +64,13 @@ with pd.ExcelWriter("analysis_output.xlsx") as writer:
 
 * **Patient IDs (Optional):** If your dataset contains a column named `patient_id` (or similar variants like `id_patient`, `ptid`), the script will automatically activate Cluster Bootstrapping.
 
-* **Outliers:** Data exceeding the validation threshold (default $\pm 4.0$D) is filtered via listwise deletion prior to matrix generation.
+* **Outliers:** Data exceeding the validation threshold (default ±4.0D) is filtered via listwise deletion prior to matrix generation.
 
 ## Configuration & Statistical Methodology
 
 While the suite defaults to Hommel corrections to match the WHWK methodology for MAE and RMSE, setting `fwer_method = 'romano_wolf'` in your settings dictionary activates a Step-Down Max-T algorithm. This evaluates the joint distribution of the test statistics, providing a powerful, less conservative alternative to standard step-up procedures.
 
-For threshold evaluations (e.g., percentage of eyes within $\le 0.50$D), this suite utilises the Asymptotic McNemar test with continuity correction. If bilateral patient data is detected, it automatically upgrades to Yang's Modified Obuchowski Test (2010) to control for intra-cluster correlation.
+For threshold evaluations (e.g., percentage of eyes within ≤0.50D), this suite utilises the Asymptotic McNemar test with continuity correction. If bilateral patient data is detected, it automatically upgrades to Yang's Modified Obuchowski Test (2010) to control for intra-cluster correlation.
 
 ## Citation & References
 
