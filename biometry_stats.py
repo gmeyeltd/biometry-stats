@@ -7,34 +7,41 @@ import warnings
 from scipy.sparse import csr_matrix
 from concurrent.futures import ThreadPoolExecutor
 
-# Configuration defaults
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
 BOOTSTRAP_ITERATIONS = 2000
+
+# Seed Configuration
 BOOTSTRAP_SEED = 42
 
 if BOOTSTRAP_SEED is None:
     BOOTSTRAP_SEED = int(np.random.default_rng().integers(0, 2**32))
-    print(f"Using random bootstrap seed: {BOOTSTRAP_SEED}")
+    print(f"--- [Biometry Stats] Random Bootstrap Seed Generated: {BOOTSTRAP_SEED} ---")
 else:
-    print(f"Using fixed bootstrap seed: {BOOTSTRAP_SEED}")
+    print(f"--- [Biometry Stats] Using Fixed Bootstrap Seed: {BOOTSTRAP_SEED} ---")
 
+# Default Global Fallbacks (Only used if settings dict is missing values)
 YUEN_TRIM_PROPORTION = 0.2
 MCNEMAR_THRESHOLD = 0.50
-MULTIPLE_TEST_METHOD = 'romano_wolf' # 'romano_wolf', 'hommel', 'holm', 'bonferroni'
+MULTIPLE_TEST_METHOD = 'romano_wolf'
 FALLBACK_TEST_METHOD = 'hommel'
 INVALID_THRESHOLD = 4.0
 AXL_SHORT_CUTOFF = 22.0
 AXL_LONG_CUTOFF = 26.0
 
-# Method toggles
+# Statistical Methods
 USE_STUDENTIZED_BS = True       
 ENFORCE_INDEPENDENCE = False
 RUN_YUEN_TEST = False           
 RUN_SD_TEST = True              
 
-# Core Statistical Functions
+# ==============================================================================
+# 1. CORE STATISTICAL FUNCTIONS
+# ==============================================================================
 
 def _calculate_percentile_bootstrap_p(boot_diffs):
-    # Fallback percentile evaluation for MedAE or non-studentized runs.
+    """Fallback percentile evaluation for MedAE or non-studentized runs."""
     valid_diffs = boot_diffs[~np.isnan(boot_diffs)]
     if len(valid_diffs) == 0: 
         return 1.0
@@ -42,7 +49,7 @@ def _calculate_percentile_bootstrap_p(boot_diffs):
     return min(p, 1.0)
 
 def mcnemar_test(mask1, mask2):
-    # Asymptotic McNemar test with continuity correction.
+    """Computes the asymptotic McNemar test with continuity correction."""
     b = np.sum(mask1 & ~mask2)
     c = np.sum(~mask1 & mask2)
     n = b + c
@@ -52,7 +59,7 @@ def mcnemar_test(mask1, mask2):
     return min(1.0, float(p_val))
 
 def clustered_mcnemar_test(mask1, mask2, cluster_ids):
-    # Yang's Modified Obuchowski Test (2010) - Cluster Robust.
+    """Yang's Modified Obuchowski Test (2010) - Cluster Robust"""
     d = mask1.astype(int) - mask2.astype(int)
     unique_clusters, cluster_idx = np.unique(cluster_ids, return_inverse=True)
     K = len(unique_clusters)
@@ -71,7 +78,10 @@ def clustered_mcnemar_test(mask1, mask2, cluster_ids):
     return min(1.0, float(p_val))
 
 def _wild_cluster_bootstrap_slope(x, y, cluster_idx, K, W_g):
-    # Vectorized WCB-t for bivariate OLS slope. Avoids loop over B via sparse matrix logic.
+    """
+    ULTRA-FAST SPARSE VECTORIZED WCB-t for bivariate OLS slope.
+    Bypasses the 2000-iteration loop via sparse matrix multiplication.
+    """
     B = W_g.shape[0]
     N = len(x)
     if K < 3: return 1.0, 0.0, np.zeros(B) 
@@ -92,7 +102,7 @@ def _wild_cluster_bootstrap_slope(x, y, cluster_idx, K, W_g):
     if var_beta1 == 0: return 1.0, 0.0, np.zeros(B)
     t_obs = beta1_hat / np.sqrt(var_beta1)
     
-    # Fast cluster grouping indicator
+    # Sparse Indicator Matrix for ultra-fast cluster grouping without loop
     I_sparse = csr_matrix((np.ones(N), (np.arange(N), cluster_idx)), shape=(N, K))
     
     eps_tilde = y - y_bar 
@@ -101,16 +111,17 @@ def _wild_cluster_bootstrap_slope(x, y, cluster_idx, K, W_g):
     CHUNK_SIZE = 500
     for i in range(0, B, CHUNK_SIZE):
         end = min(i + CHUNK_SIZE, B)
-        W_chunk = W_g[i:end, cluster_idx] 
+        W_chunk = W_g[i:end, cluster_idx] # Shape: (chunk, N)
         
-        y_star = y_bar + W_chunk * eps_tilde 
-        y_star_bar = np.mean(y_star, axis=1, keepdims=True) 
+        y_star = y_bar + W_chunk * eps_tilde # (chunk, N)
+        y_star_bar = np.mean(y_star, axis=1, keepdims=True) # (chunk, 1)
         
-        beta1_star = np.sum(dx * y_star, axis=1, keepdims=True) / sum_dx2 
-        eps_star = y_star - (y_star_bar + beta1_star * dx) 
+        beta1_star = np.sum(dx * y_star, axis=1, keepdims=True) / sum_dx2 # (chunk, 1)
+        eps_star = y_star - (y_star_bar + beta1_star * dx) # (chunk, N)
         
+        # (chunk, N) @ (N, K) -> (chunk, K). Replaces inner bincount loop entirely!
         S_g_star = (dx * eps_star) @ I_sparse
-        var_beta1_star = np.sum(S_g_star**2, axis=1) / (sum_dx2**2) 
+        var_beta1_star = np.sum(S_g_star**2, axis=1) / (sum_dx2**2) # (chunk,)
         
         valid = var_beta1_star > 0
         t_stars[i:end][valid] = beta1_star.flatten()[valid] / np.sqrt(var_beta1_star[valid])
@@ -119,14 +130,13 @@ def _wild_cluster_bootstrap_slope(x, y, cluster_idx, K, W_g):
     return float(p_val), np.abs(t_obs), np.abs(t_stars)
 
 def comdvar_wild_cluster(x, y, cluster_idx, K, W_g):
-    # Morgan-Pitman test for equal variances with Wild Cluster Bootstrap.
+    """Test hypothesis that two dependent variables have equal variances using Morgan-Pitman + Wild Cluster Bootstrap."""
     diff = x - y
     summ = x + y
     
     var_d = np.var(diff, ddof=1)
     var_s = np.var(summ, ddof=1)
     B = W_g.shape[0]
-    
     if var_d == 0 or var_s == 0: 
         return 1.0, 0.0, np.zeros(B)
         
@@ -136,8 +146,7 @@ def comdvar_wild_cluster(x, y, cluster_idx, K, W_g):
     return _wild_cluster_bootstrap_slope(z1, z2, cluster_idx, K, W_g)
 
 def olshc4(x, y):
-    # Independent HC4 Robust Regression Estimator for Morgan-Pitman.
-    # Adapted into Python from Rand Wilcox's rallfun v45 code with permission.
+    """Independent HC4 Robust Regression Estimator for Morgan-Pitman."""
     n = len(y)
     if n < 3: return 1.0 
         
@@ -170,8 +179,7 @@ def olshc4(x, y):
     return 2 * (1 - stats.t.cdf(np.abs(t_stat), df))
 
 def comdvar(x, y):
-    # Independent HC4 Morgan-Pitman test for variance equality.
-    # Adapted into Python from Rand Wilcox's rallfun v45 code with permission.
+    """Independent HC4 Morgan-Pitman test for variance equality."""
     diff = x - y
     summ = x + y
     var_x, var_y = np.var(diff, ddof=1), np.var(summ, ddof=1)
@@ -182,8 +190,9 @@ def comdvar(x, y):
 
 def perform_advanced_bootstrap(e1, e2, cluster_idx, K, b_indices, W_g, use_studentized=True):
     """
-    Cluster bootstrap engine. MAE/RMSE/MPE use CR1 Studentized Bootstrap.
-    MedAE uses NaN-padded matrix broadcasting.
+    Highly optimized cluster bootstrap engine.
+    - Smooth metrics (MAE, RMSE, MPE) use CR1 Studentized Bootstrap.
+    - MedAE uses NaN-Padded Matrix Vectorization to bypass list comprehensions entirely.
     """
     B = b_indices.shape[0]
     
@@ -194,7 +203,7 @@ def perform_advanced_bootstrap(e1, e2, cluster_idx, K, b_indices, W_g, use_stude
     d_mae = abs_e1 - abs_e2
     d_mse = sq_e1 - sq_e2
     
-    # Primary inference for MAE/RMSE/MPE
+    # 1. PRIMARY INFERENCE FOR MAE/RMSE/MPE
     S_mpe = np.bincount(cluster_idx, weights=d_mpe)
     S_mae = np.bincount(cluster_idx, weights=d_mae)
     S_mse = np.bincount(cluster_idx, weights=d_mse)
@@ -270,7 +279,9 @@ def perform_advanced_bootstrap(e1, e2, cluster_idx, K, b_indices, W_g, use_stude
         warnings.simplefilter("ignore", category=RuntimeWarning)
         boot_rmse_diffs = np.sqrt(np.maximum(0.0, b_S_sq1 / b_N)) - np.sqrt(np.maximum(0.0, b_S_sq2 / b_N))
     
-    # Inference for MedAE (NaN-padded matrix vectorization)
+    # =========================================================================
+    # 2. PRIMARY INFERENCE FOR MedAE: NaN-Padded Matrix Vectorization
+    # =========================================================================
     sort_idx = np.argsort(cluster_idx)
     e1_sorted = abs_e1[sort_idx]
     e2_sorted = abs_e2[sort_idx]
@@ -278,7 +289,7 @@ def perform_advanced_bootstrap(e1, e2, cluster_idx, K, b_indices, W_g, use_stude
     max_c_size = np.max(N_g)
     
     if max_c_size <= 10:
-        # Pad jagged clusters into a uniform NaN-matrix and broadcast
+        # SUPER FAST: Pad jagged clusters into a uniform NaN-matrix and broadcast
         e1_padded = np.full((K, max_c_size), np.nan)
         e2_padded = np.full((K, max_c_size), np.nan)
         
@@ -294,16 +305,16 @@ def perform_advanced_bootstrap(e1, e2, cluster_idx, K, b_indices, W_g, use_stude
         boot_medae = np.zeros(B)
         for i in range(0, B, CHUNK_SIZE):
             end = min(i + CHUNK_SIZE, B)
-            b_idx_chunk = b_indices[i:end] 
+            b_idx_chunk = b_indices[i:end] # (chunk, K)
             
-            chunk_e1 = e1_padded[b_idx_chunk].reshape(end - i, -1) 
+            chunk_e1 = e1_padded[b_idx_chunk].reshape(end - i, -1) # (chunk, K * max_c_size)
             chunk_e2 = e2_padded[b_idx_chunk].reshape(end - i, -1)
             
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 boot_medae[i:end] = np.nanmedian(chunk_e1, axis=1) - np.nanmedian(chunk_e2, axis=1)
     else:
-        # Fallback for large irregular clusters
+        # Fallback ONLY if dataset has massive illogical clusters (e.g. 10+ eyes per patient)
         split_points = np.cumsum(N_g)[:-1]
         e1_clusters = np.split(e1_sorted, split_points)
         e2_clusters = np.split(e2_sorted, split_points)
@@ -317,19 +328,22 @@ def perform_advanced_bootstrap(e1, e2, cluster_idx, K, b_indices, W_g, use_stude
             
     p_medae = _calculate_percentile_bootstrap_p(boot_medae)
 
-    # Resolve t-stats for all metrics
+    # =========================================================================
+    # RESOLVE T-STATS FOR ALL METRICS
+    # =========================================================================
     if use_studentized:
         boot_mpe_se = np.sqrt(np.maximum(0.0, var_mpe))
         boot_mae_se = np.sqrt(np.maximum(0.0, var_mae))
         boot_mse_se = np.sqrt(np.maximum(0.0, var_mse))
         
-        t_stars_mpe = np.where(boot_mpe_se > 0, (boot_mpe - obs_mpe) / boot_mpe_se, 0.0)
+        # Suppress divide by zero warnings since we explicitly catch zeros via np.where
+        with np.errstate(divide='ignore', invalid='ignore'):
+            t_stars_mpe = np.where(boot_mpe_se > 0, (boot_mpe - obs_mpe) / boot_mpe_se, 0.0)
+            t_stars_mae = np.where(boot_mae_se > 0, (boot_mae - obs_mae) / boot_mae_se, 0.0)
+            t_stars_mse = np.where(boot_mse_se > 0, (boot_mse - obs_mse) / boot_mse_se, 0.0)
+            
         p_mpe = np.mean(np.abs(t_stars_mpe) >= np.abs(t_obs_mpe))
-        
-        t_stars_mae = np.where(boot_mae_se > 0, (boot_mae - obs_mae) / boot_mae_se, 0.0)
         p_mae = np.mean(np.abs(t_stars_mae) >= np.abs(t_obs_mae))
-        
-        t_stars_mse = np.where(boot_mse_se > 0, (boot_mse - obs_mse) / boot_mse_se, 0.0)
         p_rmse = np.mean(np.abs(t_stars_mse) >= np.abs(t_obs_mse))
         
         rw_mpe_obs = np.abs(t_obs_mpe)
@@ -342,7 +356,7 @@ def perform_advanced_bootstrap(e1, e2, cluster_idx, K, b_indices, W_g, use_stude
         rw_rmse_null = np.abs(t_stars_mse)
         
         boot_se_medae = np.std(boot_medae, ddof=1)
-        boot_se_medae = max(boot_se_medae, 1e-6)  # Prevent zero-variance collapse
+        boot_se_medae = max(boot_se_medae, 1e-6)  # Safeguard against zero-variance collapse
         
         rw_medae_obs = np.abs(obs_medae) / boot_se_medae
         rw_medae_null = np.abs(boot_medae - obs_medae) / boot_se_medae
@@ -364,6 +378,7 @@ def perform_advanced_bootstrap(e1, e2, cluster_idx, K, b_indices, W_g, use_stude
         'RW_RMSE_obs': rw_rmse_obs, 'RW_RMSE_null': rw_rmse_null,
         'RW_MedAE_obs': rw_medae_obs, 'RW_MedAE_null': rw_medae_null,
     }
+
 
 def yuen_t_test(x, y, tr=0):
     x, y = np.array(x), np.array(y)
@@ -404,7 +419,9 @@ def romano_wolf_correction(obs_stats, boot_null_stats):
         
     return adj_p
 
-# Main Analysis Logic
+# ==============================================================================
+# 2. MAIN ANALYSIS LOGIC WITH TRUE MULTITHREADING
+# ==============================================================================
 
 def run_biometry_analysis(df_input, group_name="All", settings=None):
     settings = settings or {}
@@ -417,12 +434,25 @@ def run_biometry_analysis(df_input, group_name="All", settings=None):
     formulas = []
     
     patient_id_variants = ['patient_id', 'id_patient', 'patientid', 'pt_id', 'id', 'hosp_id', 'hospid', 'ptid']
+    
+    # Standard biometry metadata that should NEVER be treated as a formula PE
+    ignore_variants = ['axl', 'al', 'acd', 'acdepth', 'k1', 'k2', 'meank', 'age', 'gender', 'gender_num', 
+                       'eye', 'side', 'lt', 'lensthickness', 'cct', 'wtw', 'hcd', 'iol_implanted', 
+                       'postoperative_refraction', 'corneal_refractive_index']
+                       
     patient_col = None
     for c in df_input.columns:
         c_lower = str(c).lower()
         if c_lower in patient_id_variants:
-            patient_col = c; continue
-        if c in numeric_df.columns: formulas.append(c)
+            patient_col = c
+            continue
+            
+        # Ignore known metadata, prediction columns, or optimized constants
+        if c_lower in ignore_variants or c_lower.startswith('predict_') or c_lower.endswith('_const'):
+            continue
+            
+        if c in numeric_df.columns: 
+            formulas.append(c)
         
     if len(formulas) < 2: return pd.DataFrame(), {}, {}
         
@@ -441,11 +471,9 @@ def run_biometry_analysis(df_input, group_name="All", settings=None):
             new_mask = pd.Series(False, index=numeric_df.index)
             new_mask.loc[selected_idx] = True
             valid_mask &= new_mask
-            print(f"[{group_name}] Independence enforced: Using 1 eye per patient (n={len(selected_idx)}).")
-        else:
-            print(f"[{group_name}] Cluster bootstrap active (clustering by '{patient_col}').")
-    else:
-        print(f"[{group_name}] Standard bootstrap active (independent eyes assumed).")
+            print(f"[{group_name}] ENFORCE_INDEPENDENCE Active: Dropped to 1 eye per patient. Analyzing {len(selected_idx)} independent rows.")
+        else: print(f"[{group_name}] Cluster Bootstrap Active: Resampling by '{patient_col}'.")
+    else: print(f"[{group_name}] Standard Bootstrap Active: Resampling independently.")
         
     valid_df = numeric_df[valid_mask]
     n_global = len(valid_df)
@@ -453,7 +481,9 @@ def run_biometry_analysis(df_input, group_name="All", settings=None):
     if n_global < 2: return pd.DataFrame(), {}, {}
         
     rng = np.random.default_rng(BOOTSTRAP_SEED)
-    cluster_ids = df_input.loc[valid_mask, patient_col].values if patient_col else np.arange(n_global)
+    
+    # Cast to string to prevent mixed-type sorting errors in NumPy unique function
+    cluster_ids = df_input.loc[valid_mask, patient_col].astype(str).values if patient_col else np.arange(n_global)
     unique_clusters, cluster_idx = np.unique(cluster_ids, return_inverse=True)
     K = len(unique_clusters)
     has_clusters = K < n_global
@@ -467,9 +497,11 @@ def run_biometry_analysis(df_input, group_name="All", settings=None):
     pairs = list(combinations(formulas, 2))
     
     bs_type = "Studentized (CR1)" if (USE_STUDENTIZED_BS and has_clusters) else "Studentized" if USE_STUDENTIZED_BS else "Percentile"
-    print(f"[{group_name}] Processing {len(pairs)} pairwise comparisons ({bs_type}, N={n_global}, Iters={bs_iterations})...")
+    print(f"[{group_name}] Processing {len(pairs)} comparisons ({bs_type}, N={n_global}, Iterations={bs_iterations})...")
     
-    # Multithreaded Pair Processing
+    # ---------------------------------------------------------
+    # MULTITHREADED PAIR PROCESSING
+    # ---------------------------------------------------------
     def process_pair_task(pair):
         f1, f2 = pair
         e1, e2 = valid_df[f1].values, valid_df[f2].values
@@ -518,7 +550,6 @@ def run_biometry_analysis(df_input, group_name="All", settings=None):
     results = []
     rw_stats = {m: {'obs': [], 'null': []} for m in ['MPE', 'MAE', 'RMSE', 'MedAE', 'SD']}
 
-    # Execute in parallel to speed up iterations
     with ThreadPoolExecutor(max_workers=8) as executor:
         for res in executor.map(process_pair_task, pairs):
             results.append(res['row'])
@@ -533,14 +564,17 @@ def run_biometry_analysis(df_input, group_name="All", settings=None):
         'Precision Test (SD)': "Morgan-Pitman (Wild Cluster Bootstrap)" if needs_wcb else "Morgan-Pitman (HC4 Asymptotic)",
         'Accuracy Test (McNemar)': "Yang's Mod. Obuchowski (Cluster-Robust)" if has_clusters else "Asymptotic McNemar",
         'MAE Test': "Absolute Error Trimming (Studentized CR1 Bootstrap)" if (USE_STUDENTIZED_BS and has_clusters) else "Studentized Bootstrap" if USE_STUDENTIZED_BS else "Percentile Bootstrap",
+        'MedAE Test': "Cluster Percentile Bootstrap (Matrix Vectorized)" if has_clusters else "Percentile Bootstrap",
+        'RMSE Test': "Mean Squared Error Proxy (Studentized CR1 Bootstrap)" if (USE_STUDENTIZED_BS and has_clusters) else "Studentized Bootstrap" if USE_STUDENTIZED_BS else "Percentile Bootstrap",
     }
         
     return pd.DataFrame(results), rw_stats, methodology
 
 def adjust_pvalues(df_results, rw_stats=None, method='hommel'):
     """
-    Applies Romano-Wolf if requested/valid.
-    Falls back to defined fallback (e.g. Hommel) if null matrix is missing.
+    Robust Multiple Testing Adjuster
+    Applies Romano-Wolf if requested AND a valid null distribution exists.
+    Otherwise, gracefully falls back to FALLBACK_TEST_METHOD (e.g., Hommel) for that specific column.
     """
     if df_results.empty: return df_results
         
@@ -557,25 +591,37 @@ def adjust_pvalues(df_results, rw_stats=None, method='hommel'):
         pvals_adj = np.full(len(pvals), np.nan)
         mask = ~np.isnan(pvals)
         
-        use_fallback = True
+        # 0) If only 1 comparison (e.g., 2 formulas), FWER is mathematically meaningless. Skip it.
+        if np.sum(mask) <= 1:
+            pvals_adj[mask] = pvals[mask]
+            use_fallback = False
+        else:
+            use_fallback = True
         
-        if method == 'romano_wolf' and col in rw_metric_mapping and rw_stats is not None:
+        # 1) Try Romano-Wolf Correction
+        if method == 'romano_wolf' and col in rw_metric_mapping and rw_stats is not None and use_fallback:
             metric = rw_metric_mapping[col]
             obs = np.array(rw_stats[metric]['obs'])
             null_list = rw_stats[metric]['null']
             
-            if len(null_list) > 0:
+            # Only run Romano-Wolf if we have multiple comparisons (M > 1)
+            if len(obs) > 1 and len(null_list) > 0:
                 null_matrix = np.column_stack(null_list)
                 if np.sum(np.abs(null_matrix)) > 0:
                     pvals_adj_rw = romano_wolf_correction(obs, null_matrix)
                     pvals_adj[mask] = pvals_adj_rw[mask]
                     use_fallback = False
         
+        # 2) Fallback to Standard Corrections
         if use_fallback:
             current_method = FALLBACK_TEST_METHOD if method == 'romano_wolf' else method
             if np.sum(mask) > 0:
                 _, adj, _, _ = multipletests(pvals[mask], method=current_method)
                 pvals_adj[mask] = adj
+                
+        # Enforce mathematical bounds of FWER: Adjusted p-value MUST be >= Raw p-value
+        if np.sum(mask) > 0:
+            pvals_adj[mask] = np.maximum(pvals_adj[mask], pvals[mask])
                 
         try:
             idx = df_results.columns.get_loc(col) + 1
@@ -590,6 +636,7 @@ def adjust_pvalues(df_results, rw_stats=None, method='hommel'):
     return df_results
 
 def analyze_prediction_errors(df_input, axl_data=None, settings=None):
+    # Retrieve Thread-Safe Settings
     settings = settings or {}
     fwer_method = settings.get('fwer_method', MULTIPLE_TEST_METHOD)
     axl_short = settings.get('axl_short', AXL_SHORT_CUTOFF)
@@ -610,11 +657,11 @@ def analyze_prediction_errors(df_input, axl_data=None, settings=None):
             all_results_frames.append(res_df)
             global_methodology.update(methodology)
 
-    print("\nStarting analysis runs...")
+    print("--- Running Analysis: All ---")
     _process_group(df_input, "All")
         
     if axl_data is not None:
-        print("\nProcessing AXL subgroups...")
+        print("--- Running Analysis: Subgroups (AL) ---")
         if isinstance(df_input, pd.DataFrame) and hasattr(axl_data, 'index'):
             common_idx = df_input.index.intersection(axl_data.index)
             df_aligned = df_input.loc[common_idx]
@@ -641,6 +688,7 @@ def analyze_prediction_errors(df_input, axl_data=None, settings=None):
         
     final_df = pd.concat(all_results_frames, ignore_index=True)
     
+    # Properly assign the correct fallback string for the methodology table
     if global_methodology:
         if fwer_method == 'romano_wolf': fwer_name = 'Romano-Wolf'
         elif fwer_method == 'fdr_bh': fwer_name = 'FDR-BH'
@@ -655,45 +703,55 @@ def analyze_prediction_errors(df_input, axl_data=None, settings=None):
             {'Test Category': k, 'Methodology Applied': v}
             for k, v in global_methodology.items()
         ]
+        # Persist as a list of dicts to avoid pandas concat comparison errors
         final_df.attrs['methodology_summary'] = summary_data
         
     return final_df
 
-def process_excel_stats(file_path, settings=None):
-    try:
-        df = pd.read_excel(file_path)
-        return analyze_prediction_errors(df, axl_data=None, settings=settings)
-    except Exception as e:
-        return f"Error processing file: {str(e)}"
-
-def write_advanced_stats_to_excel(df, writer, sheet_name='Advanced Stats'):
+# ==============================================================================
+# 3. EXPORT HELPERS
+# ==============================================================================
+def write_advanced_stats_to_excel(df_results, writer, sheet_name='Advanced_Stats'):
     """
-    Writes the stats dataframe to an Excel writer.
-    Strips methodology columns from the main sheet and places them on a separate summary sheet.
+    Saves the results DataFrame to Excel and safely applies formatting if openpyxl is available.
+    Also extracts and writes the methodology summary to a separate 'Methodology' sheet.
     """
+    if df_results.empty:
+        print("Warning: DataFrame is empty. Nothing to write.")
+        return
+        
     cols_to_drop = ['Precision Test (SD)', 'Accuracy Test (McNemar)', 'MAE Test', 'Dependence Strategy', 'FWER Correction']
-    df_clean = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
+    df_clean = df_results.drop(columns=[c for c in cols_to_drop if c in df_results.columns], errors='ignore')
     
     df_clean.to_excel(writer, sheet_name=sheet_name, index=False)
     
-    if hasattr(df, 'attrs') and 'methodology_summary' in df.attrs:
-        summary_data = df.attrs['methodology_summary']
+    try:
+        import openpyxl
+        worksheet = writer.sheets[sheet_name]
+        for idx, col in enumerate(df_clean.columns, 1):
+            col_letter = openpyxl.utils.get_column_letter(idx)
+            worksheet.column_dimensions[col_letter].width = 15 if ' p' in col else 22
+    except (ImportError, AttributeError, KeyError):
+        pass 
+        
+    if hasattr(df_results, 'attrs') and 'methodology_summary' in df_results.attrs:
+        summary_data = df_results.attrs['methodology_summary']
         if isinstance(summary_data, list):
-            summary_df = pd.DataFrame(summary_data)
+            meth_df = pd.DataFrame(summary_data)
         elif isinstance(summary_data, pd.DataFrame):
-            summary_df = summary_data
+            meth_df = summary_data
         else:
-            summary_df = pd.DataFrame()
+            meth_df = pd.DataFrame()
             
-        if not summary_df.empty:
-            summary_df.to_excel(writer, sheet_name='Statistical Tests', index=False)
+        if not meth_df.empty:
+            meth_sheet = 'Statistical Tests'
+            meth_df.to_excel(writer, sheet_name=meth_sheet, index=False)
             
-            # Auto-adjust column widths for readability on the summary sheet
             try:
-                worksheet = writer.sheets['Statistical Tests']
-                for idx, col in enumerate(summary_df.columns):
-                    series = summary_df[col]
-                    max_len = max(series.astype(str).map(len).max(), len(str(col))) + 2
-                    worksheet.column_dimensions[chr(65 + idx)].width = max_len
-            except Exception:
-                pass # Fail gracefully if openpyxl isn't cooperating
+                import openpyxl
+                meth_ws = writer.sheets[meth_sheet]
+                for idx, col in enumerate(meth_df.columns, 1):
+                    col_letter = openpyxl.utils.get_column_letter(idx)
+                    meth_ws.column_dimensions[col_letter].width = 35 if idx == 1 else 75
+            except (ImportError, AttributeError, KeyError):
+                pass
