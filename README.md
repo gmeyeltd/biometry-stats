@@ -8,7 +8,7 @@ If you would rather not use Python, the same tests are available through a web i
 
 ## What it does
 
-For every pair of formulas, `biometry_stats.py` compares the prediction errors (PE) on:
+For every pair of formulas, `biometry_stats_advanced.py` compares the prediction errors (PE) on:
 
 - mean PE (MPE)
 - mean absolute error (MAE)
@@ -41,7 +41,7 @@ Results can also be split into short, medium and long eyes.
 
 ## Installation
 
-Python 3.8 or later. Download `biometry_stats.py` into your working folder and install:
+Python 3.8 or later. Download `biometry_stats_advanced.py` into your working folder and install:
 
 ```bash
 pip install numpy pandas scipy statsmodels openpyxl
@@ -51,7 +51,7 @@ pip install numpy pandas scipy statsmodels openpyxl
 
 ```python
 import pandas as pd
-from biometry_stats import analyze_prediction_errors, write_advanced_stats_to_excel
+from biometry_stats_advanced import analyze_prediction_errors, write_advanced_stats_to_excel
 
 df = pd.read_excel("my_biometry_data.xlsx")
 

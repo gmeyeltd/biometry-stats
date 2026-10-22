@@ -1,5 +1,5 @@
 """
-biometry_stats: compare the prediction errors of IOL power formulas, with one or both eyes per patient.
+biometry_stats_advanced: compare the prediction errors of IOL power formulas, with one or both eyes per patient.
 
 https://github.com/gmeyeltd/biometry-stats
 """
