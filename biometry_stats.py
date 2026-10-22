@@ -52,7 +52,9 @@ def _calculate_percentile_bootstrap_p(boot_diffs):
     valid_diffs = boot_diffs[~np.isnan(boot_diffs)]
     if len(valid_diffs) == 0:
         return 1.0
-    tail = min(np.sum(valid_diffs > 0), np.sum(valid_diffs < 0))
+    # ties (difference exactly 0) count in both tails, as in _bootstrap_p and the percentile CI;
+    # leaving them out made p too small when medians tie (rounded errors, or identical formulas)
+    tail = min(np.sum(valid_diffs >= 0), np.sum(valid_diffs <= 0))
     p = 2 * (1 + tail) / (len(valid_diffs) + 1)
     return min(p, 1.0)
 
