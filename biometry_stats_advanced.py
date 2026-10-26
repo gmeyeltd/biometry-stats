@@ -456,18 +456,48 @@ def romano_wolf_correction(obs_stats, boot_null_stats):
 # ------------------------------------------------------------------------------
 
 
-def romano_wolf_simultaneous_ci(diffs, scales, boot_null_stats, level=0.95):
-    """Simultaneous confidence intervals that go with the Romano-Wolf adjustment.
+def adjusted_ci_critical(boot_null_stats, level, method, n_reject=None):
+    """Critical value for each comparison's adjusted interval (difference +/- c * scale), matching the method chosen
+    for the adjusted p-values. boot_null_stats is B x M (bootstrap |t| per comparison, as for Romano-Wolf).
 
-    diffs: observed difference for each comparison; scales: its standard error (bootstrap-t) or 1 (percentile);
-    boot_null_stats: B x M bootstrap null distributions of |difference - observed| / scale, as given to
-    romano_wolf_correction. The critical value c is the level-quantile of the largest null statistic across the M
-    comparisons (single-step max-|t|), so all M intervals diff +/- c * scale cover their true differences together
-    with probability level. Returns (low, high, c).
+    romano_wolf     one c for all: level-quantile of the largest |t| across comparisons (single-step max-|t|)
+    bonferroni      each comparison's own 1 - (1 - level)/M quantile of |t| (agrees with Bonferroni p-values)
+    holm, hommel    Bonferroni intervals: these stepwise methods have no compatible finite intervals
+    fdr_bh          Benjamini-Yekutieli false-coverage-rate intervals at level 1 - R(1 - level)/M, R = number of
+                    comparisons with adjusted p <= 1 - level (R = 0 gives the Bonferroni level)
+    Returns an array of M critical values, or None for any other method (no adjusted interval).
     """
-    diffs, scales = np.asarray(diffs, float), np.asarray(scales, float)
-    c = float(np.quantile(np.asarray(boot_null_stats, float).max(axis=1), level))
-    return diffs - c * scales, diffs + c * scales, c
+    N = np.asarray(boot_null_stats, float)
+    M, alpha = N.shape[1], 1 - level
+    if method == 'romano_wolf':
+        return np.full(M, np.quantile(N.max(axis=1), level))
+    if method in ('bonferroni', 'holm', 'hommel'):
+        q = 1 - alpha / M
+    elif method == 'fdr_bh':
+        q = 1 - max(int(n_reject or 0), 1) * alpha / M
+    else:
+        return None
+    return np.quantile(N, q, axis=0)
+
+
+def adjusted_ci_description(method, level):
+    """One-line description of the adjusted intervals for the methodology sheet."""
+    L = f"{level * 100:g}%"
+    if method == 'romano_wolf':
+        return (f"{L} simultaneous intervals: difference \u00b1 c \u00d7 SE, c = {L} quantile of the largest bootstrap |t| across "
+                "comparisons (single-step max-|t|, the interval counterpart of Romano-Wolf)")
+    if method == 'bonferroni':
+        return (f"{L} Bonferroni intervals: difference \u00b1 c \u00d7 SE, c = 1 - {1 - level:g}/m quantile of each comparison's "
+                "bootstrap |t| (m comparisons); they agree with the Bonferroni-adjusted p-values")
+    if method in ('holm', 'hommel'):
+        return (f"{L} Bonferroni intervals (c = 1 - {1 - level:g}/m quantile of each comparison's bootstrap |t|): "
+                f"{method.capitalize()} has no compatible finite intervals, so these are conservative and an interval can "
+                "include 0 next to a significant adjusted p-value")
+    if method == 'fdr_bh':
+        return (f"Benjamini-Yekutieli false-coverage-rate intervals at level 1 - R \u00d7 {1 - level:g}/m (R = comparisons "
+                f"with adjusted p \u2264 {1 - level:g}); they control the false coverage rate among the significant "
+                "comparisons, not simultaneous coverage")
+    return "None: adjusted intervals are given for Romano-Wolf, Bonferroni, Holm, Hommel and Benjamini-Hochberg only"
 
 def run_biometry_analysis(df_input, group_name="All", settings=None):
     settings = settings or {}
@@ -645,9 +675,11 @@ def run_biometry_analysis(df_input, group_name="All", settings=None):
         methodology['Confidence Intervals'] = (f"{ci_level * 100:g}% bootstrap intervals for each difference: bootstrap-t (MPE, MAE), "
                                                "percentile (RMSE, MedAE, SD, proportion); not adjusted for multiple comparisons")
         methodology['Adjusted Confidence Intervals'] = (
-            f"{ci_level * 100:g}% simultaneous intervals (columns 'CI adj') for MPE, MAE and MedAE, adjusted for all comparisons in "
-            "the group: difference ± c × SE, c = quantile of the largest bootstrap |t| across comparisons (single-step "
-            "max-|t|, the interval counterpart of Romano-Wolf). RMSE is tested on the MSE scale, so it has none under the bootstrap-t")
+            ("Columns 'CI adj', for MPE, MAE and MedAE, adjusted for all comparisons in the group as the p-values are: "
+             + adjusted_ci_description(fwer_method, ci_level)
+             + ". RMSE is tested on the MSE scale, so it has none under the bootstrap-t")
+            if fwer_method in ('romano_wolf', 'bonferroni', 'holm', 'hommel', 'fdr_bh')
+            else adjusted_ci_description(fwer_method, ci_level))
 
     df_results = pd.DataFrame(results)
     # eyes and patients actually tested in this group (used to label figures)
@@ -717,13 +749,14 @@ def adjust_pvalues(df_results, rw_stats=None, method='hommel'):
         except Exception:
             pass
 
-    return add_adjusted_cis(df_results, rw_stats)
+    return add_adjusted_cis(df_results, rw_stats, method=method)
 
 
-def add_adjusted_cis(df_results, rw_stats=None, metrics=('MPE', 'MAE', 'MedAE', 'RMSE')):
-    """Add simultaneous ('CI adj') intervals next to each unadjusted confidence interval (MPE, MAE, MedAE; RMSE too
-    under the percentile bootstrap). Needs report_ci; with a single comparison the adjusted interval is the unadjusted one."""
-    if df_results.empty: return df_results
+def add_adjusted_cis(df_results, rw_stats=None, metrics=('MPE', 'MAE', 'MedAE', 'RMSE'), method='romano_wolf'):
+    """Add adjusted ('CI adj') intervals next to each unadjusted confidence interval (MPE, MAE, MedAE; RMSE too under
+    the percentile bootstrap), matching the multiple-comparison method (see adjusted_ci_critical). Needs report_ci;
+    with a single comparison the adjusted interval is the unadjusted one."""
+    if df_results.empty or method not in ('romano_wolf', 'bonferroni', 'holm', 'hommel', 'fdr_bh'): return df_results
     for metric in metrics:
         dcol = f'{metric} Diff'
         lows = [c for c in df_results.columns if c.startswith(f'{dcol} ') and c.endswith('% CI low') and 'adj' not in c]
@@ -738,7 +771,10 @@ def add_adjusted_cis(df_results, rw_stats=None, metrics=('MPE', 'MAE', 'MedAE', 
             diffs, scales = np.array(st.get('diff', []), float), np.array(st.get('scale', []), float)
             if len(diffs) != len(df_results) or not (np.isfinite(diffs).all() and np.isfinite(scales).all()):
                 continue                                                # no statistic to adjust with (e.g. RMSE, bootstrap-t)
-            adj_lo, adj_hi, _ = romano_wolf_simultaneous_ci(diffs, scales, np.column_stack(st['null']), level)
+            pcol = f'Boot ({metric}) p_adj'
+            n_rej = int(np.sum(df_results[pcol].values <= 1 - level + 1e-12)) if pcol in df_results.columns else None
+            c = adjusted_ci_critical(np.column_stack(st['null']), level, method, n_rej)
+            adj_lo, adj_hi = diffs - c * scales, diffs + c * scales
         idx = df_results.columns.get_loc(high_col) + 1
         for name, vals in ((f'{dcol} {lbl} adj low', adj_lo), (f'{dcol} {lbl} adj high', adj_hi)):
             if name in df_results.columns: df_results[name] = vals
