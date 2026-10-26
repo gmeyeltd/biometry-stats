@@ -29,8 +29,13 @@ The tests depend on whether any patient contributes both eyes:
 Each difference between two formulas can also be reported with a bootstrap confidence interval (bootstrap-t for MPE
 and MAE, percentile for RMSE, MedAE, SD and the proportion within the threshold), using the same resamples as the tests.
 These intervals are not adjusted for multiple comparisons, so an interval that excludes zero can sit next to a
-non-significant adjusted p-value. They are therefore off by default; switch them on with `"report_ci": True` and set the
-level with `"ci_level"`.
+non-significant adjusted p-value. Each one is therefore followed by an adjusted (simultaneous) interval, in the
+columns ending `CI adj low` / `CI adj high`, for MPE, MAE and MedAE: the difference ± c × its standard error, where c is
+the quantile of the largest bootstrap |t| across all the comparisons in the group (the single-step max-|t| interval
+that goes with the Romano–Wolf adjustment). Together these intervals cover all the true differences with the stated
+probability, so they agree with the adjusted p-values. RMSE is tested on the MSE scale, so it has no adjusted
+interval under the bootstrap-t. With a single comparison the adjusted interval equals the unadjusted one.
+Intervals are off by default; switch them on with `"report_ci": True` and set the level with `"ci_level"`.
 
 RMSE is tested through the mean squared error. When patients contribute both eyes, all resampling is
 done by patient, so fellow eyes stay together. Bootstrap p-values are calculated as (1 + b)/(B + 1).
@@ -60,7 +65,7 @@ settings = {
     "fwer_method": "romano_wolf",
     "axl_short": 22.0,
     "axl_long": 26.0,
-    "report_ci": False,         # unadjusted confidence interval for every difference (off by default)
+    "report_ci": False,         # unadjusted and adjusted confidence intervals for every difference (off by default)
     "ci_level": 0.95,
 }
 
