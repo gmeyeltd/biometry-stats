@@ -243,6 +243,8 @@ def analyze_prediction_errors(df, axl_data=None, settings=None, subgroup=None, c
     res.attrs = attrs
     res.attrs["methodology_summary"] = _iol_methodology(attrs.get("methodology_summary", []), s, sub_desc, cross_desc)
     res.attrs["settings"] = s
+    res.attrs["mcnemar_threshold"] = float(s["mcnemar_threshold"])
+    res.attrs["fwer_method"] = s["fwer_method"]
     return res
 
 
@@ -291,10 +293,20 @@ def _sample(results):
     return gi.rename(columns={"models": "formulas"})
 
 
-def write_advanced_stats_to_excel(results, writer):
-    """Write Results, Statistical Tests, Formula Performance, Estimates and Sample into an open pandas
-    ExcelWriter."""
-    osx._write_results_sheet(results, writer)
+def write_advanced_stats_to_excel(results, writer, sheet_name="Results"):
+    """Write the comparisons (sheet_name), Statistical Tests, Formula Performance, Estimates and Sample into an
+    open pandas ExcelWriter. The McNemar columns carry the tolerance, e.g. 'McNemar (≤0.50D) p'."""
+    if results.empty:
+        return
+    mc = float(results.attrs.get("mcnemar_threshold", DEFAULT_SETTINGS["mcnemar_threshold"]))
+    out = results.rename(columns={c: c.replace("McNemar", f"McNemar (≤{mc:.2f}D)") for c in results.columns
+                                  if c.startswith("McNemar")})
+    out.to_excel(writer, sheet_name=sheet_name, index=False)
+    osx._set_column_widths(writer, sheet_name, [15 if " p" in c else 22 for c in out.columns])
+    meth = pd.DataFrame(results.attrs.get("methodology_summary", []))
+    if not meth.empty:
+        meth.to_excel(writer, sheet_name="Statistical Tests", index=False)
+        osx._set_column_widths(writer, "Statistical Tests", [35, 75])
     fp = formula_performance(results)
     if not fp.empty:
         fp.to_excel(writer, sheet_name="Formula Performance", index=False)
