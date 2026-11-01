@@ -15,7 +15,7 @@ interval and adjusted p-value. See README.md.
 
 https://github.com/gmeyeltd/ophthalmology-stats (MIT license)
 """
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import re
 import warnings
@@ -283,7 +283,8 @@ def all_pairs_bootstrap(X, cluster_idx, K, b_indices, pairs=None, chunk=None, ci
     percentile bootstrap. Each block of resamples is a count matrix W (resamples x patients), so every bootstrap sum
     is one product W @ V, and each model's bootstrap median comes from running totals of W over its sorted errors.
 
-    With ci_level, also the CIs of each difference from the same resamples: bootstrap-t for MPE and MAE, percentile
+    With ci_level, also the CIs of each difference from the same resamples: symmetric bootstrap-t for MPE and
+    MAE (difference ± the ci_level quantile of |t*| × SE, matching the P value), percentile
     for RMSE, MedAE, SD and (with prop_threshold) the proportion of eyes with |error| <= prop_threshold. RW_* hold
     the Romano-Wolf statistics. Returns {(j, k): result}.
     """
@@ -412,9 +413,9 @@ def all_pairs_bootstrap(X, cluster_idx, K, b_indices, pairs=None, chunk=None, ci
                 if key == "RMSE":                                                    # percentile, on the RMSE scale
                     q = index[("MSE", "raw")]
                     r[f"CI_{key}"] = qci(np.sqrt(np.maximum(0, sums[:, q + j] / bN)) - np.sqrt(np.maximum(0, sums[:, q + k] / bN)))
-                else:                                                                # bootstrap-t
-                    lo_q, hi_q = qci(t_star)
-                    r[f"CI_{key}"] = (d_mean_obs - hi_q * se_obs, d_mean_obs - lo_q * se_obs)
+                else:                                                    # symmetric bootstrap-t, as the P value
+                    c = float(np.quantile(np.abs(t_star), ci_level))
+                    r[f"CI_{key}"] = (d_mean_obs - c * se_obs, d_mean_obs + c * se_obs)
             r[f"P_{key}"] = _bootstrap_p(np.abs(t_star), np.abs(t_obs))
             r[f"RW_{key}_obs"] = np.abs(t_obs); r[f"RW_{key}_null"] = np.abs(t_star)
             # RMSE is tested on the MSE scale, so its statistic gives no interval for the RMSE difference
@@ -519,9 +520,10 @@ def all_pairs_loss_bootstrap(L, cluster_idx, K, b_indices, weights=None, pairs=N
                     draws = np.sqrt(np.maximum(0, sums[:, q + j] / bN)) - np.sqrt(np.maximum(0, sums[:, q + k] / bN))
                     r[f"CI_{f}"] = qci(draws)
                     r[f"DRAWS_{f}"] = draws
-                else:
-                    lo_q, hi_q = qci(t_star)
-                    r[f"CI_{f}"] = (d_mean_obs - hi_q * se_obs, d_mean_obs - lo_q * se_obs)
+                else:                                                    # symmetric bootstrap-t, as the P value
+                    t_ok = np.abs(t_star[np.isfinite(t_star)])
+                    c = float(np.quantile(t_ok, ci_level)) if len(t_ok) else np.nan
+                    r[f"CI_{f}"] = (d_mean_obs - c * se_obs, d_mean_obs + c * se_obs)
         out[(j, k)] = r
     extra_sums = {name: sums[:, index[("extra", name)]] for name in extra}
     return out, extra_sums

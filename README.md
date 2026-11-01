@@ -31,25 +31,28 @@ The tests depend on whether any patient contributes both eyes:
 | Within ±0.50 D | McNemar test (continuity corrected) | Yang's modified Obuchowski test |
 
 RMSE is tested through the mean squared error. When patients contribute both eyes, all resampling is done by
-patient, so fellow eyes stay together. Bootstrap p-values are calculated as (1 + b)/(B + 1). Each formula's CI is a
-percentile bootstrap of patients.
+patient, so fellow eyes stay together. Bootstrap p-values are calculated as (1 + b)/(B + 1). The CIs for differences
+in MPE and MAE are symmetric bootstrap-t intervals from the same resamples as the p-values, so an interval excludes 0
+when p < 0.05. Each formula's own CI is a percentile bootstrap of patients.
 
 ## Multiple comparisons
 
 P-values are adjusted for the number of formula pairs, with the Romano–Wolf step-down procedure by default (Hommel
 for the proportion within ±0.50 D), or with Hommel, Holm, Bonferroni or Benjamini–Hochberg throughout.
 
-Each difference between two formulas has an unadjusted 95% CI. An adjusted CI is given only where one matches the
-adjusted p-value:
+Each difference between two formulas has an unadjusted 95% CI. An adjusted CI is given only where it comes from the
+same adjustment as the p-value:
 
 | `fwer_method` | Adjusted CI |
 |---|---|
 | `romano_wolf` (default) | simultaneous intervals for MPE, MAE and MedAE (single-step max-\|t\|, the interval counterpart of Romano–Wolf) |
 | `bonferroni` | Bonferroni intervals for every metric |
 | `fdr_bh` | Benjamini–Yekutieli false-coverage-rate intervals for every metric |
-| `holm`, `hommel` | none: these stepwise methods have no matching intervals |
+| `holm`, `hommel` | none: these stepwise methods have no corresponding intervals |
 
-The Statistical Tests sheet names the method used for each metric. With Romano–Wolf, the SD test uses the wild
+Romano–Wolf intervals are single-step, so one that excludes 0 always has an adjusted p-value below 0.05, although a
+step-down rejection can occasionally have an interval that includes 0. The Statistical Tests sheet names the method
+used for each metric. With Romano–Wolf, the SD test uses the wild
 bootstrap even when each patient has one eye, because the correction needs its bootstrap distribution.
 
 ## Installation
