@@ -146,6 +146,40 @@ Passed as `settings={...}` to `analyze_prediction_errors`; the command-line equi
 | `ci_level` | 0.95 | level of the CIs |
 | `one_eye` | `False` | keep one randomly chosen eye per patient |
 
+## Reproducing the WHWK set
+
+With one eye per patient, these are the tests recommended by Wilcox, Holladay, Wang and Koch (WHWK) and run by
+their R functions (Rallfun-v45). To run the WHWK set:
+
+- supply one eye per patient (no patient ID column, or `one_eye: True`), so the one-eye tests above are used;
+- set `fwer_method` to `"hommel"` (R uses Holm's correction for the proportion within ±0.50 D, so rerun with
+  `"holm"` for that outcome);
+- optionally set `bootstrap_iterations` to 1999, as in R (R uses 599 for MPE).
+
+Two differences from R are deliberate. Bootstrap p-values are (1 + b)/(B + 1) rather than R's b/B, where b is the
+number of resamples at least as extreme as the observed result and B the number of resamples, so a p-value is never
+exactly 0; and the default of 4,999 resamples makes p-values more precise. In the validation below these changes
+altered only borderline decisions.
+
+## Validation against the WHWK R functions
+
+The `validation/` folder holds the scripts used to show that version 1.0 of this code (tag `v1.0`, then a single
+file, `biometry_stats.py`) reproduces the WHWK R functions exactly when both programs are given the same bootstrap
+resamples. No data are included. To repeat the check on your own data:
+
+```bash
+git checkout v1.0 -- biometry_stats.py        # the version that was validated
+# put Rallfun-v45.txt (https://osf.io/xhe8u) in the repository root and an Excel workbook with one sheet per
+# dataset at validation/data/datasets.xlsx; edit the sheet names at the top of 00_prepare_data.py
+python validation/00_prepare_data.py          # one CSV per dataset
+Rscript validation/01_whwk_reference.R        # WHWK functions in R; saves the resamples they use
+python validation/02_moussa_and_compare.py    # this code on the same resamples; compares every result
+```
+
+`03_benchmark.R` and `03_benchmark.py` time both programs, `04_deviations.py` repeats the comparison with each
+program's own resamples and with the extended settings, and `07_seed_variability.py` repeats the bootstrap
+comparisons over 1,000 seeds. On Windows, `run_all.bat` runs steps 0 to 2.
+
 ## Simulation
 
 `prediction_error_simulation.py` is the Monte Carlo simulation used to check these tests: whether they keep the
@@ -171,8 +205,9 @@ of a cluster-aware statistical suite. Submitted.
 
 For the check against the Wilcox–Holladay–Wang–Koch (WHWK) R functions:
 
-Moussa G, Cannon N, Cooke DL. The Moussa Research Suite: a free web tool that exactly reproduces the
-Wilcox–Holladay–Wang–Koch statistics for intraocular lens formula comparison. Submitted.
+Moussa G, Cannon NT, Cooke DL. An open-source online Python implementation of the statistical tests recommended by
+Wilcox, Holladay, Wang and Koch for intraocular lens formula comparison: equivalence, computational efficiency and
+precision. Submitted.
 
 The one-eye tests follow the recommendations of:
 
